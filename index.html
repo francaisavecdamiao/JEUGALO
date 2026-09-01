@@ -1,1 +1,55 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JeuGalo</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-page="index">
 
+  <main class="screen" style="background: linear-gradient(180deg, var(--azul-claro), var(--bg-app));">
+    <img class="logo" src="/images/LOGO-JEUGALO.png" alt="JeuGalo" />
+    <h1 class="display" style="font-size:2.2rem; margin-bottom: 8px; color: var(--laranja-escuro);">JeuGalo</h1>
+    <p style="color: var(--ink-soft); margin-bottom: 32px; text-align:center;">O quiz multiplayer que faz sua turma conquistar a França!</p>
+
+    <div class="home-actions">
+      <button id="btn-aluno" class="btn btn-block">Sou Aluno</button>
+      <button id="btn-professor" class="btn btn-secondary btn-block">Sou Professor</button>
+    </div>
+  </main>
+
+  <!-- Modal senha do professor -->
+  <div id="password-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Área do Professor</h2>
+      <input id="password-input" class="input" type="password" placeholder="Senha de acesso" />
+      <p id="password-error" class="error-text"></p>
+      <div style="display:flex; gap:10px; margin-top:16px;">
+        <button id="password-cancel" class="btn btn-secondary btn-block">Cancelar</button>
+        <button id="password-submit" class="btn btn-block">Entrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal entrada do aluno -->
+  <div id="aluno-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Entrar na sala</h2>
+      <input id="aluno-room-input" class="input" type="text" placeholder="Código da sala" style="margin-bottom:10px; text-transform:uppercase;" />
+      <input id="aluno-nick-input" class="input" type="text" placeholder="Seu apelido" />
+      <p id="aluno-error" class="error-text"></p>
+      <div style="display:flex; gap:10px; margin-top:16px;">
+        <button id="aluno-cancel" class="btn btn-secondary btn-block">Cancelar</button>
+        <button id="aluno-submit" class="btn btn-block">Entrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Firebase SDK (compat, v9+) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
