@@ -1,1 +1,72 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JeuGalo — Jogar</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-page="player">
 
+  <!-- Seleção de personagem -->
+  <section id="screen-carousel" class="screen">
+    <h2 class="display" style="margin-bottom: 20px;">Escolha seu personagem</h2>
+    <div class="carousel-wrap">
+      <div class="carousel-track" id="carousel-track"></div>
+      <div class="char-name" id="char-name-display"></div>
+      <div class="carousel-controls">
+        <button class="carousel-arrow" id="carousel-prev">‹</button>
+        <button id="btn-confirm-character" class="btn">Confirmar</button>
+        <button class="carousel-arrow" id="carousel-next">›</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Aguardando o professor iniciar -->
+  <section id="screen-waiting" class="screen hidden">
+    <img class="logo" src="/images/LOGO-JEUGALO.png" alt="JeuGalo" />
+    <h2 class="display" style="text-align:center;">Aguardando o professor iniciar o jogo...</h2>
+  </section>
+
+  <!-- Tela de modo (espelha o que está no projetor) -->
+  <section id="screen-mode" class="screen mode-screen hidden">
+    <h1 id="player-mode-title"></h1>
+    <p id="player-mode-desc"></p>
+  </section>
+
+  <!-- Botões de resposta (apenas formas/cores) -->
+  <section id="screen-answer" class="screen hidden">
+    <div class="answer-grid" id="answer-grid"></div>
+    <p class="waiting-answer-msg hidden" id="waiting-answer-msg">Resposta enviada! Aguarde o fim do tempo...</p>
+  </section>
+
+  <!-- Feedback acertou / errou -->
+  <section id="screen-feedback" class="screen feedback-screen hidden">
+    <img id="feedback-img" alt="" />
+    <h2 id="feedback-title"></h2>
+    <div class="feedback-points" id="feedback-points"></div>
+  </section>
+
+  <!-- Aguardando ranking -->
+  <section id="screen-ranking-wait" class="screen hidden">
+    <img src="/images/galo.png" alt="" style="width:90px; margin-bottom:12px;" />
+    <h2 class="display">Confira o ranking no telão!</h2>
+    <p style="color:var(--ink-soft);">Sua pontuação atual:</p>
+    <p id="ranking-wait-score" style="font-family:'Feather-Bold', sans-serif; font-size:2rem; color:var(--laranja-escuro);"></p>
+  </section>
+
+  <!-- Resultado final para o aluno -->
+  <section id="screen-podium-player" class="screen hidden">
+    <img src="/images/galo.png" alt="" style="width:100px;" />
+    <h1 class="display" style="margin: 12px 0;">Fim de Jogo!</h1>
+    <p id="player-final-position" style="font-size:1.8rem; font-family:'Feather-Bold', sans-serif; color:var(--laranja-escuro);"></p>
+    <p id="player-final-score" style="color:var(--ink-soft);"></p>
+  </section>
+
+  <!-- Firebase SDK (compat, v9+) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
