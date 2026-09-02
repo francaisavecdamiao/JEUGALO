@@ -14,13 +14,13 @@
    ============================================================ */
 
 const firebaseConfig = {
-  apiKey: "SUA_API_KEY_AQUI",
-  authDomain: "seu-projeto.firebaseapp.com",
-  databaseURL: "https://seu-projeto-default-rtdb.firebaseio.com",
-  projectId: "seu-projeto",
-  storageBucket: "seu-projeto.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxxxxxx"
+  apiKey: "AIzaSyA7miLHSKdKK8CielNw-ZwU_V83Bg47Rho",
+  authDomain: "jeugalo-e6be9.firebaseapp.com",
+  projectId: "jeugalo-e6be9",
+  storageBucket: "jeugalo-e6be9.firebasestorage.app",
+  messagingSenderId: "442446594694",
+  appId: "1:442446594694:web:2c5870ab10f96c163cc707",
+  measurementId: "G-362GZR6MFR"
 };
 
 // Evita reinicializar o app se este arquivo for carregado mais de uma vez
