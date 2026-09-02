@@ -16,6 +16,7 @@
 const firebaseConfig = {
   apiKey: "AIzaSyA7miLHSKdKK8CielNw-ZwU_V83Bg47Rho",
   authDomain: "jeugalo-e6be9.firebaseapp.com",
+  databaseURL: "https://jeugalo-e6be9-default-rtdb.firebaseio.com", // <-- Adicionado!
   projectId: "jeugalo-e6be9",
   storageBucket: "jeugalo-e6be9.firebasestorage.app",
   messagingSenderId: "442446594694",
