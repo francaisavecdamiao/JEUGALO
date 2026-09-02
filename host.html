@@ -1,55 +1,84 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JeuGalo</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JeuGalo - Painel do Host</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
-<body data-page="index">
-
-  <main class="screen" style="background: linear-gradient(180deg, var(--azul-claro), var(--bg-app));">
-    <img class="logo" src="/images/LOGO-JEUGALO.png" alt="JeuGalo" />
-    <h1 class="display" style="font-size:2.2rem; margin-bottom: 8px; color: var(--laranja-escuro);">JeuGalo</h1>
-    <p style="color: var(--ink-soft); margin-bottom: 32px; text-align:center;">O quiz multiplayer que faz sua turma conquistar a França!</p>
-
-    <div class="home-actions">
-      <button id="btn-aluno" class="btn btn-block">Sou Aluno</button>
-      <button id="btn-professor" class="btn btn-secondary btn-block">Sou Professor</button>
+<body>
+  <div id="host-setup" class="card-duo" style="max-width: 800px; text-align: left;">
+    <h2>Painel do Professor</h2>
+    <hr style="margin: 15px 0;">
+    
+    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+      <button class="btn-duo btn-blue" onclick="document.getElementById('fileInput').click()">Subir JeuGalo (.json)</button>
+      <input type="file" id="fileInput" accept=".json" style="display:none" onchange="loadJSON(event)">
+      <button class="btn-duo btn-orange" onclick="addQuestionCard()">+ Criar Pergunta</button>
     </div>
-  </main>
 
-  <!-- Modal senha do professor -->
-  <div id="password-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <h2>Área do Professor</h2>
-      <input id="password-input" class="input" type="password" placeholder="Senha de acesso" />
-      <p id="password-error" class="error-text"></p>
-      <div style="display:flex; gap:10px; margin-top:16px;">
-        <button id="password-cancel" class="btn btn-secondary btn-block">Cancelar</button>
-        <button id="password-submit" class="btn btn-block">Entrar</button>
-      </div>
+    <input type="text" id="gameTitle" placeholder="Título do Jogo" style="width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 12px; border: 2px solid var(--light-gray);">
+    <input type="text" id="roomCodeInput" placeholder="Nome/Código da Sala (ex: SALA10)" style="width: 100%; padding: 12px; margin-bottom: 20px; border-radius: 12px; border: 2px solid var(--light-gray);">
+
+    <div id="questionsContainer"></div>
+
+    <div style="display:flex; gap: 10px; margin-top: 20px;">
+      <button class="btn-duo btn-green" style="flex: 1;" onclick="exportJSON()">Baixar JSON</button>
+      <button class="btn-duo btn-orange" style="flex: 1;" onclick="startLobby()">Criar Sala / Jogar</button>
     </div>
   </div>
 
-  <!-- Modal entrada do aluno -->
-  <div id="aluno-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <h2>Entrar na sala</h2>
-      <input id="aluno-room-input" class="input" type="text" placeholder="Código da sala" style="margin-bottom:10px; text-transform:uppercase;" />
-      <input id="aluno-nick-input" class="input" type="text" placeholder="Seu apelido" />
-      <p id="aluno-error" class="error-text"></p>
-      <div style="display:flex; gap:10px; margin-top:16px;">
-        <button id="aluno-cancel" class="btn btn-secondary btn-block">Cancelar</button>
-        <button id="aluno-submit" class="btn btn-block">Entrar</button>
-      </div>
+  <div id="host-lobby" class="card-duo" style="display: none; max-width: 900px;">
+    <h1>Entrem no Juego!</h1>
+    <h2 id="displayRoomCode" style="color: var(--laranja-escuro); font-size: 2.5rem; margin: 10px 0;">---</h2>
+    <div style="display: flex; justify-content: center; margin: 15px 0;" id="qrcode"></div>
+    <div style="margin: 20px 0;">
+      <h3>Jogadores Conectados (<span id="playerCount">0</span>):</h3>
+      <div id="playerList" style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: center; margin-top: 15px;"></div>
+    </div>
+    <button class="btn-duo btn-green" style="width: 100%; font-size: 1.5rem;" onclick="startGameSession()">Iniciar Jogo</button>
+  </div>
+
+  <div id="host-mode-screen" class="card-duo" style="display: none; width: 100vw; height: 100vh; border-radius: 0; border: none;">
+    <h1 id="modeTitle" style="font-size: 3.5rem; margin-top: 40px;">MODO</h1>
+    <p id="modeDesc" style="font-size: 1.8rem; margin: 30px;"></p>
+    <div style="font-size: 4rem;" id="modeTimer">10</div>
+  </div>
+
+  <div id="host-question-screen" class="card-duo" style="display: none; width: 100vw; height: 100vh; border-radius: 0; border: none; justify-content: space-between;">
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <span id="questionTimer" style="font-size: 2.5rem; font-family: Feather-Bold; color: var(--laranja-escuro);">30</span>
+      <h2 id="displayQuestionTitle" style="font-size: 2rem;">Pergunta...</h2>
+      <span id="answersCount" style="font-size: 1.5rem;">Resp: 0</span>
+    </div>
+
+    <div class="shape-grid" style="grid-template-columns: 1fr 1fr; height: 60vh;">
+      <div class="shape-btn shape-red" id="opt0">▲ <span id="optText0" style="font-size: 1.5rem; margin-left:10px;"></span></div>
+      <div class="shape-btn shape-blue" id="opt1">◆ <span id="optText1" style="font-size: 1.5rem; margin-left:10px;"></span></div>
+      <div class="shape-btn shape-yellow" id="opt2">● <span id="optText2" style="font-size: 1.5rem; margin-left:10px;"></span></div>
+      <div class="shape-btn shape-green" id="opt3">■ <span id="optText3" style="font-size: 1.5rem; margin-left:10px;"></span></div>
     </div>
   </div>
 
-  <!-- Firebase SDK (compat, v9+) -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-  <script src="firebase-config.js"></script>
-  <script src="app.js"></script>
+  <div id="host-ranking-screen" class="card-duo" style="display: none; max-width: 800px;">
+    <img src="/images/galo.png" style="width: 100px;">
+    <h2>Top 5 Alunos</h2>
+    <div id="rankingContainer" class="ranking-list"></div>
+    <button class="btn-duo btn-green" style="margin-top: 20px;" onclick="nextQuestion()">Próxima Pergunta</button>
+  </div>
+
+  <div id="host-podium-screen" class="card-duo" style="display: none; max-width: 900px;">
+    <h1>🏆 PÓDIO FINAL 🏆</h1>
+    <div id="podiumDisplay" style="display: flex; justify-content: center; align-items: flex-end; gap: 20px; height: 200px; margin: 30px 0;"></div>
+    
+    <div id="franceMapSection" style="margin-top: 30px; background: #FFF; padding: 20px; border-radius: 20px; border: 2px dashed var(--azul-dark);">
+      <h3>Mapa da França - Progresso da Turma</h3>
+      <p id="franceMapStatus" style="font-size: 1.2rem; margin: 10px 0;"></p>
+      <div id="stagesGrid" style="display: flex; gap: 8px; justify-content: center; margin-top: 15px;"></div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
