@@ -1,55 +1,40 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JeuGalo</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JeuGalo - Início</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
-<body data-page="index">
-
-  <main class="screen" style="background: linear-gradient(180deg, var(--azul-claro), var(--bg-app));">
-    <img class="logo" src="/images/LOGO-JEUGALO.png" alt="JeuGalo" />
-    <h1 class="display" style="font-size:2.2rem; margin-bottom: 8px; color: var(--laranja-escuro);">JeuGalo</h1>
-    <p style="color: var(--ink-soft); margin-bottom: 32px; text-align:center;">O quiz multiplayer que faz sua turma conquistar a França!</p>
-
-    <div class="home-actions">
-      <button id="btn-aluno" class="btn btn-block">Sou Aluno</button>
-      <button id="btn-professor" class="btn btn-secondary btn-block">Sou Professor</button>
-    </div>
-  </main>
-
-  <!-- Modal senha do professor -->
-  <div id="password-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <h2>Área do Professor</h2>
-      <input id="password-input" class="input" type="password" placeholder="Senha de acesso" />
-      <p id="password-error" class="error-text"></p>
-      <div style="display:flex; gap:10px; margin-top:16px;">
-        <button id="password-cancel" class="btn btn-secondary btn-block">Cancelar</button>
-        <button id="password-submit" class="btn btn-block">Entrar</button>
-      </div>
+<body>
+  <div class="card-duo">
+    <img src="/images/LOGO-JEUGALO.png" alt="JeuGalo" style="width: 180px; margin-bottom: 20px;">
+    <h1 style="color: var(--laranja-escuro); margin-bottom: 24px;">JeuGalo!</h1>
+    
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+      <button class="btn-duo btn-green" onclick="location.href='player.html'">Sou Aluno (Entrar)</button>
+      <button class="btn-duo btn-orange" onclick="openTeacherAuth()">Área do Professor</button>
     </div>
   </div>
 
-  <!-- Modal entrada do aluno -->
-  <div id="aluno-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <h2>Entrar na sala</h2>
-      <input id="aluno-room-input" class="input" type="text" placeholder="Código da sala" style="margin-bottom:10px; text-transform:uppercase;" />
-      <input id="aluno-nick-input" class="input" type="text" placeholder="Seu apelido" />
-      <p id="aluno-error" class="error-text"></p>
-      <div style="display:flex; gap:10px; margin-top:16px;">
-        <button id="aluno-cancel" class="btn btn-secondary btn-block">Cancelar</button>
-        <button id="aluno-submit" class="btn btn-block">Entrar</button>
-      </div>
+  <div id="authModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); justify-content:center; align-items:center;">
+    <div class="card-duo" style="width: 320px;">
+      <h2>Login Professor</h2>
+      <input type="password" id="teacherPass" placeholder="Digite a Senha" style="width: 100%; padding: 12px; border-radius: 8px; margin: 16px 0; border: 2px solid var(--light-gray);">
+      <button class="btn-duo btn-green" style="width: 100%;" onclick="loginTeacher()">Acessar</button>
     </div>
   </div>
 
-  <!-- Firebase SDK (compat, v9+) -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-  <script src="firebase-config.js"></script>
-  <script src="app.js"></script>
+  <script>
+    function openTeacherAuth() { document.getElementById('authModal').style.display = 'flex'; }
+    function loginTeacher() {
+      const pass = document.getElementById('teacherPass').value;
+      if (pass === 'Aletei4f!los') {
+        window.location.href = 'host.html';
+      } else {
+        alert('Senha incorreta!');
+      }
+    }
+  </script>
 </body>
 </html>
