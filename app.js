@@ -1,890 +1,519 @@
-/* ============================================================
-   JeuGalo — app.js
-   Lógica principal do jogo: estado local, Firebase Realtime
-   Database, fluxo da sala, pontuação e renderização de telas.
+import { db, ref, set, get, child, push, update, onValue } from './firebase-config.js';
 
-   Este arquivo é carregado em index.html, host.html e player.html.
-   A página atual é identificada por `document.body.dataset.page`
-   ("index" | "host" | "player"), e cada seção abaixo só roda
-   na página correspondente.
-   ============================================================ */
-
-/* ------------------------------------------------------------
-   0. CONSTANTES GLOBAIS
-   ------------------------------------------------------------ */
-
-const HOST_PASSWORD = "Aletei4f!los";
-
-const CHARACTERS = [
-  "ADÈLE", "ANTOINE", "BASTIEN", "BÉATRICE", "CHARLOTTE", "CÉCILE",
-  "FLORENCE", "FRANÇOIS", "GASPARD", "GREGOIRE", "JULIE", "JULIEN",
-  "LAURENT", "LOUISE", "LÉO", "MARIE", "MATHIEU", "PIERRE", "RÉMI",
-  "SOPHIE", "VALÉRIE", "ÉLISE"
+// LISTA DE PERSONAGENS
+const AVATARS = [
+  "ADÈLE", "ANTOINE", "BASTIEN", "BÉATRICE", "CHARLOTTE", "CÉCILE", "FLORENCE", 
+  "FRANÇOIS", "GASPARD", "GREGOIRE", "JULIE", "JULIEN", "LAURENT", "LOUISE", 
+  "LÉO", "MARIE", "MATHIEU", "PIERRE", "RÉMI", "SOPHIE", "VALÉRIE", "ÉLISE"
 ];
 
-function charImg(name) {
-  return `/personagens/${name}.jpeg`;
-}
-
-const MODE_INFO = {
-  NORMAL: {
-    cssClass: "mode-NORMAL",
-    emoji: "🎯✅",
-    title: "Modo Normal",
-    desc: "Cada acerto vale 200 pontos fixos. Preste atenção e responda com calma!"
-  },
-  DUPLO: {
-    cssClass: "mode-DUPLO",
-    emoji: "⚡🔥",
-    title: "Modo Duplo",
-    desc: "Rodada em dobro! Cada acerto vale 400 pontos fixos."
-  },
-  RAPIDO: {
-    cssClass: "mode-RAPIDO",
-    emoji: "⏱️💨",
-    title: "Modo Rápido",
-    desc: "Quanto mais rápido responder, mais pontos ganha: até 200 pts nos primeiros 10s, caindo gradualmente até 50 pts no fim do tempo."
-  },
-  DANO: {
-    cssClass: "mode-DANO",
-    emoji: "💀⚠️",
-    title: "Modo Dano",
-    desc: "Cuidado! Acertar vale 200 pontos, mas errar custa -50 pontos."
-  }
-};
-
-// 10 regiões da França usadas na mecânica de progresso do mapa
-const MAP_REGIONS = [
-  "Bretagne", "Normandie", "Hauts-de-France", "Île-de-France",
-  "Grand Est", "Bourgogne-Franche-Comté", "Nouvelle-Aquitaine",
-  "Auvergne-Rhône-Alpes", "Occitanie", "Provence-Alpes-Côte d'Azur"
+// REGIONALISMO DA FRANÇA (10 FASES)
+const FRANCE_STAGES = [
+  "Île-de-France", "Normandie", "Bretagne", "Grand Est", "Occitanie", 
+  "Provence-Alpes-Côte d'Azur", "Nouvelle-Aquitaine", "Auvergne-Rhône-Alpes", "Hauts-de-France", "Centre-Val de Loire"
 ];
 
-const MODE_SCREEN_SECONDS = 10; // duração da tela de transição de modo
-const RANKING_SCREEN_SECONDS = 6; // duração da tela de ranking intermediário
-const REVEAL_SECONDS = 3; // tempo mostrando a resposta correta antes do ranking
+let currentAvatarIdx = 0;
+let currentGameData = { title: "", questions: [] };
+let activeRoomCode = "";
+let localPlayerKey = "";
+let currentQIdx = 0;
+let audioCache = {};
+let questionStartTime = 0;
+let previousScores = {};
 
-const TIME_STEPS = [20, 30, 45, 60];
-
-/* ------------------------------------------------------------
-   1. HELPERS GERAIS
-   ------------------------------------------------------------ */
-
-function qs(id) { return document.getElementById(id); }
-
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+// Sincronizador de Áudio Resiliente
+function playAudio(path, loop = false) {
+  if (!audioCache[path]) {
+    audioCache[path] = new Audio(path);
+  }
+  const audio = audioCache[path];
+  audio.loop = loop;
+  audio.currentTime = 0;
+  audio.play().catch(e => console.log("Áudio aguardando ação prévia:", e));
+  return audio;
 }
 
-function generateRoomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 5; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
-}
-
-function playSound(src, { loop = false, volume = 1 } = {}) {
-  try {
-    const audio = new Audio(src);
-    audio.loop = loop;
-    audio.volume = volume;
-    audio.play().catch(() => { /* navegador pode bloquear até haver interação — ok, ignoramos */ });
-    return audio;
-  } catch (e) {
-    console.warn("Não foi possível tocar áudio:", src, e);
-    return null;
+function stopAudio(path) {
+  if (audioCache[path]) {
+    audioCache[path].pause();
+    audioCache[path].currentTime = 0;
   }
 }
 
-// Calcula os pontos de uma resposta dado o modo da questão
-function calculatePoints(mode, correct, timeMs, timeLimitSeconds) {
-  if (!correct) {
-    return mode === "DANO" ? -50 : 0;
-  }
-  switch (mode) {
-    case "NORMAL": return 200;
-    case "DUPLO": return 400;
-    case "DANO": return 200;
-    case "RAPIDO": {
-      const tSec = timeMs / 1000;
-      if (tSec <= 10) return 200;
-      const decayWindow = Math.max(timeLimitSeconds - 10, 1);
-      const progress = Math.min(1, (tSec - 10) / decayWindow);
-      return Math.round(200 - progress * (200 - 50));
-    }
-    default: return 200;
-  }
-}
-
-function shapeForIndex(i) {
-  return ["▲", "◆", "●", "■"][i] || "";
-}
-
-/* ============================================================
-   2. PÁGINA: index.html
-   ============================================================ */
-
-function initIndexPage() {
-  const btnProfessor = qs("btn-professor");
-  const btnAluno = qs("btn-aluno");
-  const modalBackdrop = qs("password-modal");
-  const passwordInput = qs("password-input");
-  const passwordSubmit = qs("password-submit");
-  const passwordCancel = qs("password-cancel");
-  const passwordError = qs("password-error");
-
-  const alunoModal = qs("aluno-modal");
-  const alunoRoomInput = qs("aluno-room-input");
-  const alunoNickInput = qs("aluno-nick-input");
-  const alunoSubmit = qs("aluno-submit");
-  const alunoCancel = qs("aluno-cancel");
-  const alunoError = qs("aluno-error");
-
-  // Se veio de um QR Code (?room=CODIGO), pula direto para o modal do aluno
-  const params = new URLSearchParams(window.location.search);
-  const roomFromUrl = params.get("room");
-
-  btnProfessor.addEventListener("click", () => {
-    passwordError.textContent = "";
-    passwordInput.value = "";
-    modalBackdrop.classList.remove("hidden");
-    passwordInput.focus();
-  });
-  passwordCancel.addEventListener("click", () => modalBackdrop.classList.add("hidden"));
-  passwordSubmit.addEventListener("click", () => {
-    if (passwordInput.value === HOST_PASSWORD) {
-      sessionStorage.setItem("jeugalo_host_auth", "1");
-      window.location.href = "host.html";
-    } else {
-      passwordError.textContent = "Senha incorreta. Tente novamente.";
-    }
-  });
-  passwordInput.addEventListener("keydown", (e) => { if (e.key === "Enter") passwordSubmit.click(); });
-
-  function openAlunoModal() {
-    alunoError.textContent = "";
-    alunoRoomInput.value = roomFromUrl || "";
-    alunoNickInput.value = "";
-    alunoModal.classList.remove("hidden");
-    alunoNickInput.focus();
-  }
-
-  btnAluno.addEventListener("click", openAlunoModal);
-  alunoCancel.addEventListener("click", () => alunoModal.classList.add("hidden"));
-
-  alunoSubmit.addEventListener("click", async () => {
-    const code = alunoRoomInput.value.trim().toUpperCase();
-    const nick = alunoNickInput.value.trim();
-    if (!code || !nick) {
-      alunoError.textContent = "Preencha o código da sala e seu apelido.";
-      return;
-    }
-    alunoError.textContent = "Verificando sala...";
-    try {
-      const snap = await db.ref(`rooms/${code}`).get();
-      if (!snap.exists()) {
-        alunoError.textContent = "Sala não encontrada. Confira o código.";
-        return;
-      }
-      sessionStorage.setItem("jeugalo_nick", nick);
-      window.location.href = `player.html?room=${encodeURIComponent(code)}&nick=${encodeURIComponent(nick)}`;
-    } catch (e) {
-      alunoError.textContent = "Erro ao conectar. Tente novamente.";
-      console.error(e);
-    }
-  });
-
-  if (roomFromUrl) openAlunoModal();
-}
-
-/* ============================================================
-   3. PÁGINA: host.html
-   ============================================================ */
-
-let hostState = {
-  roomCode: null,
-  roomName: null,
-  game: null,           // { title, questions: [...] }
-  players: {},           // snapshot local dos players
-  currentQuestionIndex: -1,
-  ambientAudio: null,
-  questionAudio: null,
-  alertPlayed: false,
-  timerInterval: null,
-  mapPhaseAtStart: 0
+// CARROSSEL 3D LOGIC
+window.moveCarousel = function(dir) {
+  currentAvatarIdx = (currentAvatarIdx + dir + AVATARS.length) % AVATARS.length;
+  updateCarouselUI();
 };
 
-let builderQuestions = []; // usado na tela do construtor de quiz
+function updateCarouselUI() {
+  const prevIdx = (currentAvatarIdx - 1 + AVATARS.length) % AVATARS.length;
+  const nextIdx = (currentAvatarIdx + 1) % AVATARS.length;
 
-function initHostPage() {
-  if (sessionStorage.getItem("jeugalo_host_auth") !== "1") {
-    window.location.href = "index.html";
-    return;
+  document.getElementById('avatar-prev').src = `/personagens/${AVATARS[prevIdx]}.jpeg`;
+  document.getElementById('avatar-active').src = `/personagens/${AVATARS[currentAvatarIdx]}.jpeg`;
+  document.getElementById('avatar-next').src = `/personagens/${AVATARS[nextIdx]}.jpeg`;
+  document.getElementById('avatar-name').innerText = AVATARS[currentAvatarIdx];
+}
+
+// INITIALIZATION
+document.addEventListener('DOMContentLoaded', () => {
+  if (document.getElementById('avatar-active')) updateCarouselUI();
+  
+  // URL Params Check para auto-fill room
+  const urlParams = new URLSearchParams(window.location.search);
+  const roomParam = urlParams.get('room');
+  if (roomParam && document.getElementById('roomCode')) {
+    document.getElementById('roomCode').value = roomParam;
   }
+});
 
-  showHostView("dashboard");
+// HOST - CRIADOR DE JOGO
+window.addQuestionCard = function(data = null) {
+  const container = document.getElementById('questionsContainer');
+  const qId = container.children.length;
+  
+  const qHtml = `
+    <div class="card-duo question-card" style="width:100%; margin-bottom:15px; text-align:left;" id="qcard-${qId}">
+      <h4>Pergunta ${qId + 1}</h4>
+      <input type="text" class="q-title" placeholder="Texto da Pergunta" value="${data ? data.question : ''}" style="width:100%; padding:8px; margin:5px 0;">
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:5px;">
+        <input type="text" class="opt-0" placeholder="Opção Vermelha" value="${data ? data.options[0] : ''}">
+        <input type="text" class="opt-1" placeholder="Opção Azul" value="${data ? data.options[1] : ''}">
+        <input type="text" class="opt-2" placeholder="Opção Amarela" value="${data ? data.options[2] : ''}">
+        <input type="text" class="opt-3" placeholder="Opção Verde" value="${data ? data.options[3] : ''}">
+      </div>
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <select class="q-correct">
+          <option value="0" ${data && data.correctIndex === 0 ? 'selected' : ''}>Correta: Vermelho</option>
+          <option value="1" ${data && data.correctIndex === 1 ? 'selected' : ''}>Correta: Azul</option>
+          <option value="2" ${data && data.correctIndex === 2 ? 'selected' : ''}>Correta: Amarelo</option>
+          <option value="3" ${data && data.correctIndex === 3 ? 'selected' : ''}>Correta: Verde</option>
+        </select>
+        <select class="q-time">
+          <option value="20" ${data && data.timeLimit === 20 ? 'selected' : ''}>20s</option>
+          <option value="30" ${data && data.timeLimit === 30 || !data ? 'selected' : ''}>30s</option>
+          <option value="45" ${data && data.timeLimit === 45 ? 'selected' : ''}>45s</option>
+          <option value="60" ${data && data.timeLimit === 60 ? 'selected' : ''}>60s</option>
+        </select>
+        <select class="q-mode">
+          <option value="NORMAL" ${data && data.mode === 'NORMAL' ? 'selected' : ''}>MODO NORMAL</option>
+          <option value="DUPLO" ${data && data.mode === 'DUPLO' ? 'selected' : ''}>MODO DUPLO</option>
+          <option value="RAPIDO" ${data && data.mode === 'RAPIDO' ? 'selected' : ''}>MODO RÁPIDO</option>
+          <option value="DANO" ${data && data.mode === 'DANO' ? 'selected' : ''}>MODO DANO</option>
+        </select>
+        <button class="btn-duo btn-blue" onclick="duplicateQuestion(${qId})">Duplicar</button>
+      </div>
+    </div>
+  `;
+  container.insertAdjacentHTML('beforeend', qHtml);
+};
 
-  qs("btn-upload-json").addEventListener("click", () => qs("json-file-input").click());
-  qs("json-file-input").addEventListener("change", handleJsonUpload);
-  qs("btn-create-quiz").addEventListener("click", () => {
-    builderQuestions = [];
-    renderBuilder();
-    showHostView("builder");
+window.duplicateQuestion = function(qId) {
+  const card = document.getElementById(`qcard-${qId}`);
+  const data = {
+    question: card.querySelector('.q-title').value,
+    options: [card.querySelector('.opt-0').value, card.querySelector('.opt-1').value, card.querySelector('.opt-2').value, card.querySelector('.opt-3').value],
+    correctIndex: parseInt(card.querySelector('.q-correct').value),
+    timeLimit: parseInt(card.querySelector('.q-time').value),
+    mode: card.querySelector('.q-mode').value
+  };
+  window.addQuestionCard(data);
+};
+
+function extractGameFromUI() {
+  const title = document.getElementById('gameTitle').value || "JeuGalo Quiz";
+  const cards = document.querySelectorAll('.question-card');
+  const questions = [];
+
+  cards.forEach((card, idx) => {
+    questions.push({
+      id: idx + 1,
+      question: card.querySelector('.q-title').value,
+      options: [
+        card.querySelector('.opt-0').value,
+        card.querySelector('.opt-1').value,
+        card.querySelector('.opt-2').value,
+        card.querySelector('.opt-3').value
+      ],
+      correctIndex: parseInt(card.querySelector('.q-correct').value),
+      timeLimit: parseInt(card.querySelector('.q-time').value),
+      mode: card.querySelector('.q-mode').value
+    });
   });
-  qs("btn-add-card").addEventListener("click", () => addBuilderCard());
-  qs("btn-download-json").addEventListener("click", downloadBuilderJson);
-  qs("btn-play-direct").addEventListener("click", () => startRoomSetup(buildGameFromBuilder()));
-
-  qs("btn-open-room").addEventListener("click", () => {
-    const name = qs("room-name-input").value.trim();
-    if (!name) { qs("room-name-error").textContent = "Digite um nome para a sala."; return; }
-    openRoom(name);
-  });
-
-  qs("btn-start-game").addEventListener("click", startGameFlow);
+  return { title, questions };
 }
 
-function showHostView(view) {
-  ["dashboard", "builder", "waiting-room", "game-projector"].forEach((v) => {
-    qs(`view-${v}`).classList.toggle("hidden", v !== view);
-  });
-}
+window.exportJSON = function() {
+  const game = extractGameFromUI();
+  const blob = new Blob([JSON.stringify(game, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${game.title.replace(/\s+/g, '_')}.json`;
+  a.click();
+};
 
-// --- 3.1 Upload de JSON existente -----------------------------------------
-function handleJsonUpload(e) {
+window.loadJSON = function(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const game = JSON.parse(reader.result);
-      if (!game.questions || !Array.isArray(game.questions)) throw new Error("JSON inválido");
-      startRoomSetup(game);
-    } catch (err) {
-      alert("Não foi possível ler o arquivo JSON. Verifique o formato.");
-      console.error(err);
-    }
+  reader.onload = function(evt) {
+    const data = JSON.parse(evt.target.result);
+    document.getElementById('gameTitle').value = data.title;
+    document.getElementById('questionsContainer').innerHTML = "";
+    data.questions.forEach(q => window.addQuestionCard(q));
   };
   reader.readAsText(file);
-}
+};
 
-// --- 3.2 Construtor de quiz -------------------------------------------------
-function addBuilderCard(copyFrom = null) {
-  const card = copyFrom
-    ? JSON.parse(JSON.stringify(copyFrom))
-    : {
-        id: builderQuestions.length + 1,
-        question: "",
-        options: ["", "", "", ""],
-        correctIndex: 0,
-        timeLimit: 30,
-        mode: "NORMAL"
-      };
-  card.id = builderQuestions.length + 1;
-  builderQuestions.push(card);
-  renderBuilder();
-}
+// MULTIPLAYER REALTIME HOST
+window.startLobby = async function() {
+  currentGameData = extractGameFromUI();
+  activeRoomCode = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+  if (!activeRoomCode) return alert("Digite um código de sala!");
 
-function renderBuilder() {
-  const wrap = qs("builder-cards");
-  wrap.innerHTML = "";
-  builderQuestions.forEach((card, idx) => {
-    const el = document.createElement("div");
-    el.className = "question-card";
-    el.innerHTML = `
-      <strong>Pergunta ${idx + 1}</strong>
-      <input class="input" type="text" placeholder="Digite a pergunta" value="${escapeHtml(card.question)}" data-field="question" />
-      <div class="options-editor">
-        ${card.options.map((opt, i) => `
-          <div class="option-row">
-            <input type="radio" name="correct-${idx}" ${card.correctIndex === i ? "checked" : ""} data-field="correctIndex" data-index="${i}" />
-            <input class="input" type="text" placeholder="Alternativa ${i + 1}" value="${escapeHtml(opt)}" data-field="option" data-index="${i}" />
-          </div>
-        `).join("")}
-      </div>
-      <div>
-        <div style="margin-bottom:6px; font-weight:700;">Tempo:</div>
-        <div class="pill-select" data-field="timeLimit">
-          ${TIME_STEPS.map((t) => `<button data-value="${t}" class="${card.timeLimit === t ? "selected" : ""}">${t}s</button>`).join("")}
-        </div>
-      </div>
-      <div>
-        <div style="margin-bottom:6px; font-weight:700;">Modalidade:</div>
-        <div class="pill-select" data-field="mode">
-          ${Object.keys(MODE_INFO).map((m) => `<button data-value="${m}" class="${card.mode === m ? "selected" : ""}">${MODE_INFO[m].title}</button>`).join("")}
-        </div>
-      </div>
-      <div class="card-toolbar">
-        <button class="small-btn btn-secondary" data-action="duplicate">Duplicar Card</button>
-        <button class="small-btn btn-danger" data-action="remove">Remover</button>
-      </div>
-    `;
+  document.getElementById('host-setup').style.display = 'none';
+  document.getElementById('host-lobby').style.display = 'block';
+  document.getElementById('displayRoomCode').innerText = activeRoomCode;
 
-    el.querySelector('[data-field="question"]').addEventListener("input", (e) => {
-      builderQuestions[idx].question = e.target.value;
-    });
-    el.querySelectorAll('input[data-field="option"]').forEach((input) => {
-      input.addEventListener("input", (e) => {
-        builderQuestions[idx].options[Number(e.target.dataset.index)] = e.target.value;
-      });
-    });
-    el.querySelectorAll('input[data-field="correctIndex"]').forEach((input) => {
-      input.addEventListener("change", (e) => {
-        builderQuestions[idx].correctIndex = Number(e.target.dataset.index);
-      });
-    });
-    el.querySelector('[data-field="timeLimit"]').addEventListener("click", (e) => {
-      if (e.target.tagName !== "BUTTON") return;
-      builderQuestions[idx].timeLimit = Number(e.target.dataset.value);
-      renderBuilder();
-    });
-    el.querySelector('[data-field="mode"]').addEventListener("click", (e) => {
-      if (e.target.tagName !== "BUTTON") return;
-      builderQuestions[idx].mode = e.target.dataset.value;
-      renderBuilder();
-    });
-    el.querySelector('[data-action="duplicate"]').addEventListener("click", () => addBuilderCard(card));
-    el.querySelector('[data-action="remove"]').addEventListener("click", () => {
-      builderQuestions.splice(idx, 1);
-      renderBuilder();
-    });
-
-    wrap.appendChild(el);
+  // QR Code Generation
+  document.getElementById('qrcode').innerHTML = "";
+  new QRCode(document.getElementById('qrcode'), {
+    text: `${window.location.origin}/player.html?room=${activeRoomCode}`,
+    width: 160,
+    height: 160
   });
-}
 
-function escapeHtml(str) {
-  return (str || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
+  playAudio('/sounds/game-backsound.mp3', true);
 
-function buildGameFromBuilder() {
-  const title = qs("builder-title-input").value.trim() || "JeuGalo";
-  return { title, questions: builderQuestions };
-}
-
-function downloadBuilderJson() {
-  const game = buildGameFromBuilder();
-  const blob = new Blob([JSON.stringify(game, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${game.title.replace(/\s+/g, "_")}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-// --- 3.3 Criação e abertura da sala -----------------------------------------
-function startRoomSetup(game) {
-  if (!game.questions || game.questions.length === 0) {
-    alert("Adicione ao menos uma pergunta antes de continuar.");
-    return;
-  }
-  hostState.game = game;
-  showHostView("waiting-room");
-  qs("waiting-room-title").textContent = "Digite o nome da sala para abri-la";
-  qs("room-name-form").classList.remove("hidden");
-  qs("room-open-info").classList.add("hidden");
-}
-
-async function openRoom(roomName) {
-  const code = generateRoomCode();
-  hostState.roomCode = code;
-  hostState.roomName = roomName;
-
-  // Recupera progresso de fase do mapa da França (se a sala já existiu antes)
-  const mapSnap = await db.ref(`mapProgress/${roomName}`).get();
-  hostState.mapPhaseAtStart = mapSnap.exists() ? (mapSnap.val().unlockedPhase || 0) : 0;
-
-  await db.ref(`rooms/${code}`).set({
-    roomName,
-    status: "waiting",
-    createdAt: firebase.database.ServerValue.TIMESTAMP,
-    game: hostState.game,
-    currentQuestionIndex: -1,
+  // Inicializar Sala no Firebase
+  await set(ref(db, `rooms/${activeRoomCode}`), {
+    state: "LOBBY",
+    gameData: currentGameData,
+    currentQuestion: 0,
     players: {}
   });
 
-  qs("room-name-form").classList.add("hidden");
-  qs("room-open-info").classList.remove("hidden");
-  qs("room-code-display").textContent = code;
+  // Ocultar e escutar Players
+  onValue(ref(db, `rooms/${activeRoomCode}/players`), (snapshot) => {
+    const players = snapshot.val() || {};
+    const container = document.getElementById('playerList');
+    container.innerHTML = "";
+    document.getElementById('playerCount').innerText = Object.keys(players).length;
 
-  const joinUrl = `${window.location.origin}${window.location.pathname.replace("host.html", "index.html")}?room=${code}`;
-  qs("room-join-url").textContent = joinUrl;
-  qs("qrcode-box").innerHTML = "";
-  // eslint-disable-next-line no-undef
-  new QRCode(qs("qrcode-box"), { text: joinUrl, width: 180, height: 180 });
-
-  hostState.ambientAudio = playSound("/sounds/game-backsound.mp3", { loop: true, volume: 0.5 });
-
-  db.ref(`rooms/${code}/players`).on("value", (snap) => {
-    hostState.players = snap.val() || {};
-    renderWaitingPlayers();
-  });
-}
-
-function renderWaitingPlayers() {
-  const wrap = qs("waiting-players-list");
-  wrap.innerHTML = "";
-  const list = Object.values(hostState.players || {});
-  qs("waiting-players-count").textContent = list.length;
-  list.forEach((p) => {
-    const chip = document.createElement("div");
-    chip.className = "player-chip";
-    chip.innerHTML = `<img src="${charImg(p.character)}" alt="${p.character}" /><span>${escapeHtml(p.nickname)}</span>`;
-    wrap.appendChild(chip);
-  });
-  qs("btn-start-game").disabled = list.length === 0;
-}
-
-/* --- 3.4 Fluxo do jogo (host controla o estado da sala) ------------------ */
-
-async function startGameFlow() {
-  if (hostState.ambientAudio) hostState.ambientAudio.pause();
-  showHostView("game-projector");
-  hostState.currentQuestionIndex = -1;
-  await advanceToNextQuestion();
-}
-
-async function advanceToNextQuestion() {
-  hostState.currentQuestionIndex += 1;
-  const questions = hostState.game.questions;
-
-  if (hostState.currentQuestionIndex >= questions.length) {
-    await finishGame();
-    return;
-  }
-
-  const question = questions[hostState.currentQuestionIndex];
-  await showModeScreen(question);
-}
-
-function showModeScreen(question) {
-  return new Promise((resolve) => {
-    db.ref(`rooms/${hostState.roomCode}`).update({
-      status: "mode",
-      currentQuestionIndex: hostState.currentQuestionIndex
+    Object.values(players).forEach(p => {
+      container.insertAdjacentHTML('beforeend', `
+        <div style="text-align:center;">
+          <img src="/personagens/${p.avatar}.jpeg" style="width:60px; height:60px; border-radius:50%; border:2px solid var(--green-correct);">
+          <p style="font-size:0.8rem; font-weight:bold;">${p.name}</p>
+        </div>
+      `);
     });
-
-    const info = MODE_INFO[question.mode] || MODE_INFO.NORMAL;
-    const el = qs("mode-screen");
-    el.className = `screen mode-screen ${info.cssClass}`;
-    qs("mode-emoji").textContent = info.emoji;
-    qs("mode-title").textContent = info.title;
-    qs("mode-desc").textContent = info.desc;
-    showProjectorPanel("mode-screen");
-
-    playSound("/sounds/modo.mp3");
-
-    let remaining = MODE_SCREEN_SECONDS;
-    qs("mode-timer").textContent = remaining;
-    const interval = setInterval(() => {
-      remaining -= 1;
-      qs("mode-timer").textContent = Math.max(remaining, 0);
-      if (remaining <= 0) {
-        clearInterval(interval);
-        resolve(runQuestion(question));
-      }
-    }, 1000);
   });
-}
-
-function runQuestion(question) {
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    db.ref(`rooms/${hostState.roomCode}`).update({
-      status: "question",
-      questionStartedAt: startedAt,
-      "currentQuestion": question
-    });
-
-    renderProjectorQuestion(question);
-    showProjectorPanel("question-screen");
-
-    hostState.questionAudio = playSound("/sounds/questionsound.mp3", { loop: true, volume: 0.4 });
-    hostState.alertPlayed = false;
-
-    let remaining = question.timeLimit;
-    qs("question-timer").textContent = remaining;
-    qs("question-timer").classList.remove("low-time");
-
-    hostState.timerInterval = setInterval(() => {
-      remaining -= 1;
-      qs("question-timer").textContent = Math.max(remaining, 0);
-      if (remaining <= 10 && !hostState.alertPlayed) {
-        hostState.alertPlayed = true;
-        qs("question-timer").classList.add("low-time");
-        playSound("/sounds/alert.mp3");
-      }
-      if (remaining <= 0) {
-        clearInterval(hostState.timerInterval);
-        if (hostState.questionAudio) hostState.questionAudio.pause();
-        resolve(finishQuestion(question, startedAt));
-      }
-    }, 1000);
-  });
-}
-
-function renderProjectorQuestion(question) {
-  qs("question-title").textContent = question.question;
-  const grid = qs("options-grid");
-  grid.innerHTML = "";
-  question.options.forEach((opt, i) => {
-    const tile = document.createElement("div");
-    tile.className = `option-tile opt-${i}`;
-    tile.innerHTML = `<span class="shape">${shapeForIndex(i)}</span><span>${escapeHtml(opt)}</span>`;
-    grid.appendChild(tile);
-  });
-}
-
-async function finishQuestion(question, startedAt) {
-  // Marca visualmente a resposta correta no projetor
-  document.querySelectorAll(".option-tile").forEach((tile, i) => {
-    tile.classList.add(i === question.correctIndex ? "correct-reveal" : "wrong-reveal");
-  });
-
-  // Calcula pontuação de cada jogador com base nas respostas registradas
-  const playersSnap = await db.ref(`rooms/${hostState.roomCode}/players`).get();
-  const players = playersSnap.val() || {};
-  const updates = {};
-
-  Object.entries(players).forEach(([pid, p]) => {
-    const answer = p.answers && p.answers[question.id];
-    const correct = answer ? answer.optionIndex === question.correctIndex : false;
-    const timeMs = answer ? (answer.answeredAt - startedAt) : question.timeLimit * 1000;
-    const points = answer
-      ? calculatePoints(question.mode, correct, timeMs, question.timeLimit)
-      : (question.mode === "DANO" ? -50 : 0); // não respondeu = considerado erro
-
-    const newScore = (p.score || 0) + points;
-    updates[`${pid}/score`] = newScore;
-    updates[`${pid}/lastDelta`] = points;
-    if (answer) {
-      updates[`${pid}/answers/${question.id}/correct`] = correct;
-      updates[`${pid}/answers/${question.id}/pointsEarned`] = points;
-    } else {
-      updates[`${pid}/answers/${question.id}`] = { optionIndex: -1, correct: false, pointsEarned: points };
-    }
-  });
-
-  await db.ref(`rooms/${hostState.roomCode}/players`).update(updates);
-  await db.ref(`rooms/${hostState.roomCode}`).update({ status: "reveal" });
-
-  await new Promise((r) => setTimeout(r, REVEAL_SECONDS * 1000));
-  return showRankingScreen();
-}
-
-async function showRankingScreen() {
-  await db.ref(`rooms/${hostState.roomCode}`).update({ status: "ranking" });
-  playSound("/sounds/level.mp3");
-  showProjectorPanel("ranking-screen");
-
-  const playersSnap = await db.ref(`rooms/${hostState.roomCode}/players`).get();
-  const players = Object.entries(playersSnap.val() || {}).map(([id, p]) => ({ id, ...p }));
-  players.sort((a, b) => (b.score || 0) - (a.score || 0));
-  const top5 = players.slice(0, 5);
-
-  const list = qs("ranking-list");
-  list.innerHTML = "";
-  top5.forEach((p, i) => {
-    const row = document.createElement("div");
-    row.className = "ranking-row";
-    const arrow = (p.lastDelta || 0) > 0
-      ? '<span class="rank-arrow-up">▲</span>'
-      : (p.lastDelta || 0) < 0
-        ? '<span class="rank-arrow-down">▼</span>'
-        : "";
-    row.innerHTML = `
-      <span class="ranking-pos">${i + 1}º</span>
-      <img src="${charImg(p.character)}" alt="${p.character}" />
-      <span class="ranking-name">${escapeHtml(p.nickname)}</span>
-      ${arrow}
-      <span class="ranking-score">${p.score || 0} pts</span>
-    `;
-    list.appendChild(row);
-  });
-
-  await new Promise((r) => setTimeout(r, RANKING_SCREEN_SECONDS * 1000));
-  return advanceToNextQuestion();
-}
-
-function showProjectorPanel(panelId) {
-  ["mode-screen", "question-screen", "ranking-screen", "podium-screen"].forEach((id) => {
-    qs(id).classList.toggle("hidden", id !== panelId);
-  });
-}
-
-async function finishGame() {
-  await db.ref(`rooms/${hostState.roomCode}`).update({ status: "podium" });
-  playSound("/sounds/win01.mp3");
-  showProjectorPanel("podium-screen");
-
-  const playersSnap = await db.ref(`rooms/${hostState.roomCode}/players`).get();
-  const players = Object.entries(playersSnap.val() || {}).map(([id, p]) => ({ id, ...p }));
-  players.sort((a, b) => (b.score || 0) - (a.score || 0));
-  const [first, second, third] = players;
-
-  const podiumEl = qs("podium-bars");
-  podiumEl.innerHTML = "";
-  [
-    { p: second, cls: "podium-2", pos: "2º" },
-    { p: first, cls: "podium-1", pos: "1º" },
-    { p: third, cls: "podium-3", pos: "3º" }
-  ].forEach(({ p, cls, pos }) => {
-    if (!p) return;
-    const slot = document.createElement("div");
-    slot.className = `podium-slot ${cls}`;
-    slot.innerHTML = `
-      <img class="avatar" src="${charImg(p.character)}" alt="${p.character}" />
-      <strong>${escapeHtml(p.nickname)}</strong>
-      <span>${p.score || 0} pts</span>
-      <div class="podium-bar">${pos}</div>
-    `;
-    podiumEl.appendChild(slot);
-  });
-
-  // --- Mecânica de progresso do Mapa da França ---
-  const questions = hostState.game.questions;
-  const maxPossiblePerQuestion = questions.map((q) => (q.mode === "DUPLO" ? 400 : 200));
-  const maxPossibleTotal = maxPossiblePerQuestion.reduce((a, b) => a + b, 0) * Math.max(players.length, 1);
-  const totalRoomScore = players.reduce((sum, p) => sum + (p.score || 0), 0);
-  const wonPhase = maxPossibleTotal > 0 && totalRoomScore > maxPossibleTotal * 0.5;
-
-  let newPhase = hostState.mapPhaseAtStart;
-  if (wonPhase && newPhase < MAP_REGIONS.length) newPhase += 1;
-
-  await db.ref(`mapProgress/${hostState.roomName}`).set({ unlockedPhase: newPhase });
-  renderMap(newPhase, wonPhase);
-}
-
-function renderMap(unlockedPhase, wonThisRound) {
-  const wrap = qs("map-regions");
-  wrap.innerHTML = "";
-  MAP_REGIONS.forEach((region, i) => {
-    const dot = document.createElement("div");
-    const unlocked = i < unlockedPhase;
-    const current = i === unlockedPhase - 1 && wonThisRound;
-    dot.className = `map-region ${unlocked ? "unlocked" : ""} ${current ? "current" : ""}`;
-    dot.title = region;
-    dot.textContent = i + 1;
-    wrap.appendChild(dot);
-  });
-  qs("map-status-text").textContent = wonThisRound
-    ? `Parabéns! A turma conquistou a região "${MAP_REGIONS[unlockedPhase - 1] || ""}" 🎉`
-    : "A turma ainda não atingiu 50% da pontuação total desta fase. Tentem novamente!";
-}
-
-/* ============================================================
-   4. PÁGINA: player.html
-   ============================================================ */
-
-let playerState = {
-  roomCode: null,
-  playerId: null,
-  nickname: null,
-  character: CHARACTERS[Math.floor(CHARACTERS.length / 2)],
-  carouselIndex: Math.floor(CHARACTERS.length / 2),
-  currentQuestion: null,
-  hasAnswered: false,
-  lastStatus: null
 };
 
-function initPlayerPage() {
-  const params = new URLSearchParams(window.location.search);
-  const roomCode = (params.get("room") || "").toUpperCase();
-  const nickname = params.get("nick") || sessionStorage.getItem("jeugalo_nick") || "";
+window.startGameSession = function() {
+  stopAudio('/sounds/game-backsound.mp3');
+  currentQIdx = 0;
+  runQuestionFlow();
+};
 
-  if (!roomCode || !nickname) {
-    window.location.href = "index.html";
+async function runQuestionFlow() {
+  const qData = currentGameData.questions[currentQIdx];
+  if (!qData) {
+    showFinalPodium();
     return;
   }
 
-  playerState.roomCode = roomCode;
-  playerState.nickname = nickname;
-  playerState.playerId = uid();
-
-  renderCarousel();
-  qs("carousel-prev").addEventListener("click", () => moveCarousel(-1));
-  qs("carousel-next").addEventListener("click", () => moveCarousel(1));
-  qs("btn-confirm-character").addEventListener("click", confirmJoin);
-
-  showPlayerScreen("screen-carousel");
-}
-
-function moveCarousel(dir) {
-  playerState.carouselIndex = (playerState.carouselIndex + dir + CHARACTERS.length) % CHARACTERS.length;
-  renderCarousel();
-}
-
-function renderCarousel() {
-  const track = qs("carousel-track");
-  track.innerHTML = "";
-  const idx = playerState.carouselIndex;
-  const order = [idx - 2, idx - 1, idx, idx + 1, idx + 2].map((i) => (i + CHARACTERS.length) % CHARACTERS.length);
-
-  order.forEach((charIdx, pos) => {
-    const name = CHARACTERS[charIdx];
-    const card = document.createElement("div");
-    let cls = "char-card";
-    if (pos === 2) cls += " active";
-    else if (pos === 0 || pos === 4) cls += " side-far";
-    card.className = cls;
-    card.innerHTML = `<img src="${charImg(name)}" alt="${name}" />`;
-    track.appendChild(card);
+  // Atualizar Estado Geral para MODE_ANNOUNCE
+  await update(ref(db, `rooms/${activeRoomCode}`), {
+    state: "MODE_ANNOUNCE",
+    currentQuestion: currentQIdx
   });
 
-  qs("char-name-display").textContent = CHARACTERS[idx];
-  playerState.character = CHARACTERS[idx];
+  // Mostrar Tela Modo Host
+  document.getElementById('host-lobby').style.display = 'none';
+  document.getElementById('host-ranking-screen').style.display = 'none';
+  const modeScreen = document.getElementById('host-mode-screen');
+  modeScreen.style.display = 'flex';
+  modeScreen.className = `card-duo mode-${qData.mode}`;
+  
+  const descriptions = {
+    NORMAL: "Pontuação fixa de 200 pontos por acerto! 🎯",
+    DUPLO: "Pontuação dobrada! 400 pontos por acerto! ⚡🔥",
+    RAPIDO: "Velocidade é tudo! Responda nos primeiros 10s para pontuação máxima! ⏱️",
+    DANO: "Atenção! Erros custam 50 pontos! 💀⚠️"
+  };
+
+  document.getElementById('modeTitle').innerText = `MODO ${qData.mode}`;
+  document.getElementById('modeDesc').innerText = descriptions[qData.mode];
+
+  playAudio('/sounds/modo.mp3');
+
+  let modeTimerVal = 10;
+  const modeInterval = setInterval(() => {
+    modeTimerVal--;
+    document.getElementById('modeTimer').innerText = modeTimerVal;
+    if (modeTimerVal <= 0) {
+      clearInterval(modeInterval);
+      launchQuestionGameplay(qData);
+    }
+  }, 1000);
 }
 
-async function confirmJoin() {
-  await db.ref(`rooms/${playerState.roomCode}/players/${playerState.playerId}`).set({
-    nickname: playerState.nickname,
-    character: playerState.character,
-    score: 0,
-    lastDelta: 0,
-    joinedAt: firebase.database.ServerValue.TIMESTAMP
+async function launchQuestionGameplay(qData) {
+  document.getElementById('host-mode-screen').style.display = 'none';
+  document.getElementById('host-question-screen').style.display = 'flex';
+  
+  document.getElementById('displayQuestionTitle').innerText = qData.question;
+  document.getElementById('optText0').innerText = qData.options[0];
+  document.getElementById('optText1').innerText = qData.options[1];
+  document.getElementById('optText2').innerText = qData.options[2];
+  document.getElementById('optText3').innerText = qData.options[3];
+
+  await update(ref(db, `rooms/${activeRoomCode}`), {
+    state: "QUESTION_ACTIVE",
+    answers: {}
   });
 
-  db.ref(`rooms/${playerState.roomCode}/players/${playerState.playerId}`).onDisconnect().remove();
+  questionStartTime = Date.now();
+  let timeRemaining = qData.timeLimit;
+  document.getElementById('questionTimer').innerText = timeRemaining;
 
-  listenToRoom();
+  playAudio('/sounds/questionsound.mp3', true);
+
+  const qTimer = setInterval(() => {
+    timeRemaining--;
+    document.getElementById('questionTimer').innerText = timeRemaining;
+
+    if (timeRemaining === 10) {
+      playAudio('/sounds/alert.mp3');
+    }
+
+    if (timeRemaining <= 0) {
+      clearInterval(qTimer);
+      stopAudio('/sounds/questionsound.mp3');
+      processAnswersAndShowRanking();
+    }
+  }, 1000);
 }
 
-function listenToRoom() {
-  db.ref(`rooms/${playerState.roomCode}`).on("value", (snap) => {
-    const room = snap.val();
-    if (!room) return;
+async function processAnswersAndShowRanking() {
+  const qData = currentGameData.questions[currentQIdx];
+  const roomSnap = await get(child(ref(db), `rooms/${activeRoomCode}`));
+  const room = roomSnap.val();
+  const answers = room.answers || {};
+  const players = room.players || {};
 
-    if (room.status !== playerState.lastStatus) {
-      playerState.lastStatus = room.status;
-      handleRoomStatusChange(room);
+  // Processamento de pontos
+  for (let pKey in players) {
+    const ans = answers[pKey];
+    let scoreGained = 0;
+
+    if (ans !== undefined) {
+      if (ans.optionIndex === qData.correctIndex) {
+        if (qData.mode === 'NORMAL') scoreGained = 200;
+        else if (qData.mode === 'DUPLO') scoreGained = 400;
+        else if (qData.mode === 'RAPIDO') {
+          scoreGained = ans.responseTime <= 10 ? 200 : Math.max(50, 200 - Math.floor((ans.responseTime - 10) * 7.5));
+        } else if (qData.mode === 'DANO') scoreGained = 200;
+      } else {
+        if (qData.mode === 'DANO') scoreGained = -50;
+      }
     }
 
-    if (room.status === "ranking" || room.status === "reveal") {
-      updateMyScoreDisplay(room);
-    }
+    const newScore = Math.max(0, (players[pKey].score || 0) + scoreGained);
+    await update(ref(db, `rooms/${activeRoomCode}/players/${pKey}`), { score: newScore });
+    
+    // Atualizar Feedback Individual do Player
+    await set(ref(db, `rooms/${activeRoomCode}/playerFeedback/${pKey}`), {
+      isCorrect: ans && ans.optionIndex === qData.correctIndex
+    });
+  }
+
+  // Notificar Fim da Pergunta
+  await update(ref(db, `rooms/${activeRoomCode}`), { state: "QUESTION_END" });
+
+  showIntermediateRanking();
+}
+
+async function showIntermediateRanking() {
+  document.getElementById('host-question-screen').style.display = 'none';
+  document.getElementById('host-ranking-screen').style.display = 'block';
+
+  playAudio('/sounds/level.mp3');
+
+  const roomSnap = await get(child(ref(db), `rooms/${activeRoomCode}`));
+  const players = Object.entries(roomSnap.val().players || {}).map(([key, val]) => ({ key, ...val }));
+
+  // Ordenar por Pontuação
+  players.sort((a, b) => b.score - a.score);
+
+  const container = document.getElementById('rankingContainer');
+  container.innerHTML = "";
+
+  players.slice(0, 5).forEach((p, idx) => {
+    const prevScore = previousScores[p.key] || 0;
+    const diff = p.score - prevScore;
+    const arrow = diff > 0 ? `<span class="arrow-up">▲ +${diff}</span>` : (diff < 0 ? `<span class="arrow-down">▼ ${diff}</span>` : `<span>-</span>`);
+
+    container.insertAdjacentHTML('beforeend', `
+      <div class="ranking-item">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <b>#${idx + 1}</b>
+          <img src="/personagens/${p.avatar}.jpeg" style="width:40px; height:40px; border-radius:50%;">
+          <span>${p.name}</span>
+        </div>
+        <div>
+          ${arrow}
+          <span style="font-family: Feather-Bold; margin-left:15px;">${p.score} pts</span>
+        </div>
+      </div>
+    `);
+
+    previousScores[p.key] = p.score;
   });
 }
 
-function handleRoomStatusChange(room) {
-  switch (room.status) {
-    case "waiting":
-      showPlayerScreen("screen-waiting");
-      break;
-    case "mode": {
-      const q = room.game.questions[room.currentQuestionIndex];
-      const info = MODE_INFO[q.mode] || MODE_INFO.NORMAL;
-      const el = qs("screen-mode");
-      el.className = `screen mode-screen ${info.cssClass}`;
-      qs("player-mode-title").textContent = info.title;
-      qs("player-mode-desc").textContent = "Prepare-se!";
-      showPlayerScreen("screen-mode");
-      playerState.hasAnswered = false;
-      break;
+window.nextQuestion = function() {
+  currentQIdx++;
+  runQuestionFlow();
+};
+
+async function showFinalPodium() {
+  document.getElementById('host-ranking-screen').style.display = 'none';
+  document.getElementById('host-podium-screen').style.display = 'block';
+
+  playAudio('/sounds/win01.mp3');
+  await update(ref(db, `rooms/${activeRoomCode}`), { state: "GAME_OVER" });
+
+  const roomSnap = await get(child(ref(db), `rooms/${activeRoomCode}`));
+  const players = Object.values(roomSnap.val().players || {}).sort((a, b) => b.score - a.score);
+
+  const podium = document.getElementById('podiumDisplay');
+  podium.innerHTML = "";
+
+  const heights = ["140px", "180px", "100px"];
+  const order = [1, 0, 2]; // 2º, 1º, 3º
+
+  order.forEach((posIdx) => {
+    const p = players[posIdx];
+    if (p) {
+      podium.insertAdjacentHTML('beforeend', `
+        <div style="display:flex; flex-direction:column; align-items:center;">
+          <img src="/personagens/${p.avatar}.jpeg" style="width:50px; height:50px; border-radius:50%; border:3px solid var(--amarelo);">
+          <b>${p.name}</b>
+          <div style="height:${heights[posIdx]}; width:80px; background:var(--laranja-escuro); border-radius:12px 12px 0 0; display:flex; align-items:center; justify-content:center; color:white; font-family:Feather-Bold; font-size:1.5rem;">
+            ${posIdx + 1}º
+          </div>
+        </div>
+      `);
     }
-    case "question": {
-      playerState.currentQuestion = room.currentQuestion;
-      playerState.hasAnswered = false;
-      playerState.questionStartedAt = room.questionStartedAt;
-      renderPlayerAnswerButtons();
-      showPlayerScreen("screen-answer");
-      break;
+  });
+
+  // SISTEMA PROGRESSO MAPA DA FRANÇA
+  const totalScoreRoom = players.reduce((sum, p) => sum + p.score, 0);
+  const maxEstimated = currentGameData.questions.length * players.length * 200;
+  const passedStage = totalScoreRoom > (maxEstimated * 0.5);
+
+  const mapRef = ref(db, `mapProgress/${activeRoomCode}`);
+  const mapSnap = await get(mapRef);
+  let currentStage = mapSnap.exists() ? mapSnap.val().stage : 0;
+
+  if (passedStage && currentStage < FRANCE_STAGES.length - 1) {
+    currentStage++;
+    await set(mapRef, { stage: currentStage });
+  }
+
+  document.getElementById('franceMapStatus').innerText = passedStage 
+    ? `🎉 Conquista! A sala atingiu a meta e conquistou a região: ${FRANCE_STAGES[currentStage]}!` 
+    : `Pontuação insuficiente para desbloquear a próxima região. Região atual: ${FRANCE_STAGES[currentStage]}`;
+
+  const stagesGrid = document.getElementById('stagesGrid');
+  stagesGrid.innerHTML = "";
+  FRANCE_STAGES.forEach((st, idx) => {
+    const isUnlocked = idx <= currentStage;
+    stagesGrid.insertAdjacentHTML('beforeend', `
+      <div style="padding: 8px 12px; border-radius: 12px; background: ${isUnlocked ? 'var(--green-correct)' : 'var(--light-gray)'}; color: ${isUnlocked ? 'white' : '#888'}; font-size: 0.8rem; font-family: Feather-Bold;">
+        ${st} ${isUnlocked ? '✓' : '🔒'}
+      </div>
+    `);
+  });
+}
+
+// MULTIPLAYER REALTIME PLAYER LOGIC
+window.joinRoom = async function() {
+  const code = document.getElementById('roomCode').value.trim().toUpperCase();
+  const name = document.getElementById('nickname').value.trim();
+  const avatar = AVATARS[currentAvatarIdx];
+
+  if (!code || !name) return alert("Preencha todos os campos!");
+
+  const roomSnap = await get(child(ref(db), `rooms/${code}`));
+  if (!roomSnap.exists()) return alert("Sala não encontrada!");
+
+  activeRoomCode = code;
+  const playerRef = push(ref(db, `rooms/${code}/players`));
+  localPlayerKey = playerRef.key;
+
+  await set(playerRef, {
+    name: name,
+    avatar: avatar,
+    score: 0
+  });
+
+  document.getElementById('player-login').style.display = 'none';
+  document.getElementById('player-wait').style.display = 'block';
+
+  // Escutar Mudança de Estados da Sala
+  onValue(ref(db, `rooms/${code}/state`), (snapshot) => {
+    const state = snapshot.val();
+    if (state === "QUESTION_ACTIVE") {
+      document.getElementById('player-wait').style.display = 'none';
+      document.getElementById('player-feedback').style.display = 'none';
+      document.getElementById('player-gameplay').style.display = 'block';
+    } else if (state === "QUESTION_END") {
+      document.getElementById('player-gameplay').style.display = 'none';
+      checkPlayerFeedback();
+    } else if (state === "GAME_OVER") {
+      document.getElementById('player-gameplay').style.display = 'none';
+      document.getElementById('player-wait').style.display = 'block';
+      document.getElementById('player-wait').innerHTML = "<h1>Jogo Finalizado! Confira o Pódio no Projetor.</h1>";
     }
-    case "reveal": {
-      showFeedbackScreen();
-      break;
-    }
-    case "ranking": {
-      showPlayerScreen("screen-ranking-wait");
-      break;
-    }
-    case "podium": {
-      showPlayerFinalScreen(room);
-      break;
-    }
-    default:
-      break;
+  });
+};
+
+window.sendAnswer = async function(optionIdx) {
+  playAudio('/sounds/click.mp3');
+  const responseTime = (Date.now() - questionStartTime) / 1000;
+  
+  await set(ref(db, `rooms/${activeRoomCode}/answers/${localPlayerKey}`), {
+    optionIndex: optionIdx,
+    responseTime: responseTime
+  });
+
+  document.getElementById('player-gameplay').style.display = 'none';
+  document.getElementById('player-wait').style.display = 'block';
+};
+
+async function checkPlayerFeedback() {
+  const fbSnap = await get(child(ref(db), `rooms/${activeRoomCode}/playerFeedback/${localPlayerKey}`));
+  const feedback = fbSnap.val();
+
+  document.getElementById('player-wait').style.display = 'none';
+  const fbScreen = document.getElementById('player-feedback');
+  fbScreen.style.display = 'block';
+
+  if (feedback && feedback.isCorrect) {
+    playAudio('/sounds/ok.mp3');
+    document.getElementById('feedbackText').innerText = "Você Acertou! 🎉";
+    document.getElementById('feedbackText').style.color = "var(--green-correct)";
+    document.getElementById('feedbackImg').src = "/images/happygalo.png";
+  } else {
+    playAudio('/sounds/falha.mp3');
+    document.getElementById('feedbackText').innerText = "Que pena, errou! 😢";
+    document.getElementById('feedbackText').style.color = "var(--vermelho)";
+    document.getElementById('feedbackImg').src = "/images/sadgalo.png";
   }
 }
-
-function renderPlayerAnswerButtons() {
-  const grid = qs("answer-grid");
-  grid.innerHTML = "";
-  playerState.currentQuestion.options.forEach((_, i) => {
-    const btn = document.createElement("button");
-    btn.className = `answer-tile opt-${i}`;
-    btn.textContent = shapeForIndex(i);
-    btn.addEventListener("click", () => submitAnswer(i, btn));
-    grid.appendChild(btn);
-  });
-  qs("waiting-answer-msg").classList.add("hidden");
-}
-
-async function submitAnswer(optionIndex, btnEl) {
-  if (playerState.hasAnswered) return;
-  playerState.hasAnswered = true;
-
-  playSound("/sounds/click.mp3");
-
-  document.querySelectorAll(".answer-tile").forEach((b) => (b.disabled = true));
-  btnEl.classList.add("selected");
-  qs("waiting-answer-msg").classList.remove("hidden");
-
-  await db.ref(`rooms/${playerState.roomCode}/players/${playerState.playerId}/answers/${playerState.currentQuestion.id}`).set({
-    optionIndex,
-    answeredAt: Date.now()
-  });
-}
-
-async function showFeedbackScreen() {
-  const snap = await db.ref(`rooms/${playerState.roomCode}/players/${playerState.playerId}`).get();
-  const p = snap.val() || {};
-  const answer = (p.answers && p.answers[playerState.currentQuestion.id]) || {};
-  const correct = !!answer.correct;
-
-  const el = qs("screen-feedback");
-  el.className = `screen feedback-screen ${correct ? "feedback-correct" : "feedback-wrong"}`;
-  qs("feedback-img").src = correct ? "/images/happygalo.png" : "/images/sadgalo.png";
-  qs("feedback-title").textContent = correct ? "Você acertou!" : "Você errou!";
-  qs("feedback-points").textContent = `${answer.pointsEarned >= 0 ? "+" : ""}${answer.pointsEarned || 0} pontos`;
-
-  playSound(correct ? "/sounds/ok.mp3" : "/sounds/falha.mp3");
-  showPlayerScreen("screen-feedback");
-}
-
-async function updateMyScoreDisplay(room) {
-  const snap = await db.ref(`rooms/${playerState.roomCode}/players/${playerState.playerId}`).get();
-  const p = snap.val();
-  if (p && qs("ranking-wait-score")) {
-    qs("ranking-wait-score").textContent = `${p.score || 0} pontos`;
-  }
-}
-
-function showPlayerFinalScreen(room) {
-  showPlayerScreen("screen-podium-player");
-  db.ref(`rooms/${playerState.roomCode}/players`).get().then((snap) => {
-    const players = Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }));
-    players.sort((a, b) => (b.score || 0) - (a.score || 0));
-    const myIndex = players.findIndex((p) => p.id === playerState.playerId);
-    qs("player-final-position").textContent = myIndex >= 0 ? `${myIndex + 1}º lugar` : "";
-    qs("player-final-score").textContent = `${players[myIndex] ? players[myIndex].score || 0 : 0} pontos`;
-  });
-}
-
-function showPlayerScreen(screenId) {
-  [
-    "screen-carousel", "screen-waiting", "screen-mode", "screen-answer",
-    "screen-feedback", "screen-ranking-wait", "screen-podium-player"
-  ].forEach((id) => qs(id).classList.toggle("hidden", id !== screenId));
-}
-
-/* ============================================================
-   5. BOOTSTRAP — decide qual página inicializar
-   ============================================================ */
-
-document.addEventListener("DOMContentLoaded", () => {
-  const page = document.body.dataset.page;
-  if (page === "index") initIndexPage();
-  else if (page === "host") initHostPage();
-  else if (page === "player") initPlayerPage();
-});
